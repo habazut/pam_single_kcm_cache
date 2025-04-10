@@ -30,6 +30,7 @@
 #include <security/pam_ext.h>
 
 #define PAM_DEBUG_ARG                   0x01
+#define PAM_RANDOM_ARG                  0x02
 
 static int
 pam_parse (const pam_handle_t *pamh, krb5_context context, int argc, const char **argv, char **cc_suffix)
@@ -50,6 +51,7 @@ pam_parse (const pam_handle_t *pamh, krb5_context context, int argc, const char 
 
         /* random credential cache name */
         else if (!strcmp(*argv, "random")) {
+            ctrl |= PAM_RANDOM_ARG;
             static const int a = 'a',  z = 'z';
             unsigned char key[11];
             krb5_data rand_data;
@@ -302,6 +304,9 @@ prepare_ccache (pam_handle_t *pamh, krb5_context context, const char *cache_name
     krb5_ccache fixed_cache = NULL;
     krb5_principal test_princ = NULL;
     char *krb5ccname = getenv("KRB5CCNAME");
+    char *pam_krb5ccname = getenv("PAM_KRB5CCNAME");
+    pam_syslog(pamh, LOG_ERR, "KRB5CCNAME=%s", krb5ccname);
+    pam_syslog(pamh, LOG_ERR, "PAM_KRB5CCNAME=%s", pam_krb5ccname);
 
     /* ensure that we are iterating all KCM */
     if (setenv("KRB5CCNAME", "KCM:", 1) != 0) {
@@ -325,7 +330,6 @@ prepare_ccache (pam_handle_t *pamh, krb5_context context, const char *cache_name
     if (retval) {
         goto exit; /* let get_best_source_ccache() log the error */
     }
-
     /* did we by chance hit the cache we actually want? */
     if (source_cache != NULL) {
         error = krb5_cc_get_full_name(context, source_cache, &source_cache_name);
@@ -411,7 +415,8 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
     char *cc_suffix = NULL;
     krb5_context context = NULL;
     krb5_error_code error;
-
+    int random_in_use = FALSE;
+    
     /* initalize Kerberos library */
     error = krb5_init_context(&context);
     if (error) {
@@ -422,7 +427,7 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
         return PAM_IGNORE;
     }
 
-    pam_parse(pamh, context, argc, argv, &cc_suffix);
+    random_in_use = (pam_parse(pamh, context, argc, argv, &cc_suffix) & PAM_RANDOM_ARG);
     if (!cc_suffix) {
         pam_syslog(pamh, LOG_ERR, "select 'random' or 'suffix=whatever'");
         krb5_free_context(context);
@@ -467,6 +472,42 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
         return PAM_IGNORE;
     }
 
+    /* Check if we have a file cache to take care of */
+#ifdef FOO
+    if (FALSE && random_in_use) {
+      
+      /* OK try again */
+      char *alt_ccname;
+      (void)asprintf(&alt_ccname, "FILE:/tmp/TEST_%d", uid);
+      if (setenv("KRB5CCNAME",alt_ccname, 1) != 0) {
+        pam_syslog(pamh, LOG_ERR, "Could not set environemnt variable KRB5CCNAME=%s because of %s", alt_ccname, strerror(errno));
+        retval = PAM_IGNORE;
+        return retval;
+      }
+      {
+	char *krb5ccname = getenv("KRB5CCNAME");
+	pam_syslog(pamh, LOG_ERR, "KRB5CCNAME=%s", krb5ccname);
+      }
+      
+      /* initalize Kerberos library */
+      error = krb5_init_context(&context);
+      if (error) {
+        error_msg = krb5_get_error_message(context, error);
+        pam_syslog(pamh, LOG_ERR, "%s while initializing krb5", error_msg);
+        retval = PAM_IGNORE;
+        return retval;
+      }
+      
+      /* get current best cache to be able to copy over the delegated credentials */
+      
+      retval = get_best_source_ccache(pamh, context, username, uid, &source_cache, &source_tgt);
+      if (retval) {
+        return retval;
+      }
+      /* end try 2 */ 
+    }
+#endif
+	
     /* ensure that the given credential cache exists at the end
        and whatever has been set up already is copied over  */
     int retval = prepare_ccache(pamh, context, target_cache, username, user_entry->pw_uid);
