@@ -9,6 +9,7 @@
 
 #include "config.h"
 
+#include <glob.h>
 #include <ctype.h>
 #include <errno.h>
 #include <krb5.h>
@@ -30,6 +31,7 @@
 #include <security/pam_ext.h>
 
 #define PAM_DEBUG_ARG                   0x01
+#define PAM_RANDOM_ARG                  0x02
 
 static int
 pam_parse (const pam_handle_t *pamh, krb5_context context, int argc, const char **argv, char **cc_suffix)
@@ -50,6 +52,7 @@ pam_parse (const pam_handle_t *pamh, krb5_context context, int argc, const char 
 
         /* random credential cache name */
         else if (!strcmp(*argv, "random")) {
+	    ctrl |= PAM_RANDOM_ARG;
             static const int a = 'a',  z = 'z';
             unsigned char key[11];
             krb5_data rand_data;
@@ -302,7 +305,8 @@ prepare_ccache (pam_handle_t *pamh, krb5_context context, const char *cache_name
     krb5_ccache fixed_cache = NULL;
     krb5_principal test_princ = NULL;
     char *krb5ccname = getenv("KRB5CCNAME");
-
+    pam_syslog(pamh, LOG_ERR, "prepcache KRB5CCNAME=%s", krb5ccname);
+    
     /* ensure that we are iterating all KCM */
     if (setenv("KRB5CCNAME", "KCM:", 1) != 0) {
         pam_syslog(pamh, LOG_ERR, "Could not set environemnt variable KRB5CCNAME=KCM: because of %s", strerror(errno));
@@ -411,7 +415,8 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
     char *cc_suffix = NULL;
     krb5_context context = NULL;
     krb5_error_code error;
-
+    int random_in_use = FALSE;
+    
     /* initalize Kerberos library */
     error = krb5_init_context(&context);
     if (error) {
@@ -423,6 +428,7 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
     }
 
     pam_parse(pamh, context, argc, argv, &cc_suffix);
+    random_in_use = (pam_parse(pamh, context, argc, argv, &cc_suffix) & PAM_RANDOM_ARG);
     if (!cc_suffix) {
         pam_syslog(pamh, LOG_ERR, "select 'random' or 'suffix=whatever'");
         krb5_free_context(context);
@@ -467,6 +473,100 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
         return PAM_IGNORE;
     }
 
+    /* search file cache space */
+    if (random_in_use) {
+      glob_t globlist;
+      int globresult;
+      char *globpattern;
+      if (asprintf(&globpattern, "/tmp/krb5cc_%d_*", user_entry->pw_uid) < 15) {
+	pam_syslog(pamh, LOG_ERR, "GLOBPATTERN alloc failed");
+	globpattern = "";
+      }
+      pam_syslog(pamh, LOG_ERR, "GLOBPATTERN1: %s", globpattern);
+      globresult = glob(globpattern, GLOB_ERR, NULL, &globlist);
+      /*char *filematch = NULL;*/
+      if (globresult == 0) {
+	int i;
+	int retval;
+	krb5_ccache source_cache = NULL;
+	krb5_creds source_tgt;
+	while (globlist.gl_pathv[i]) {
+	  pam_syslog(pamh, LOG_ERR, "GLOBFILE: %s", globlist.gl_pathv[i]);
+	  /*filematch = globlist.gl_pathv[i];*/
+	  char *old_ccache_name;
+	  if (asprintf(&old_ccache_name, "FILE:%s", globlist.gl_pathv[i]) < 7) {
+	    pam_syslog(pamh, LOG_ERR, "old ccache name alloc failed");
+	  }
+	  
+	  krb5_ccache old_cc = NULL;
+	  retval = krb5_cc_resolve(context, old_ccache_name, &old_cc );
+	  //int retval = get_best_source_ccache(pamh, context, username, user_entry->pw_uid, &source_cache, &source_tgt);
+	  if (retval) {
+	    const char *error_msg = NULL;
+	    error_msg = krb5_get_error_message(context, retval);
+	    pam_syslog(pamh, LOG_ERR, "krb5_cc_resolve 1 on %s failed with %s", globlist.gl_pathv[i], error_msg);
+	    krb5_free_error_message(context, error_msg);
+	  }
+	  krb5_principal old_princ = NULL;
+	  char *princname = NULL;
+	  retval = krb5_cc_get_principal(context, old_cc, &old_princ);
+	  if (retval)  {
+            const char *error_msg;
+            error_msg = krb5_get_error_message(context, retval);
+            pam_syslog(pamh, LOG_ERR, "%s while reading principal of old_cc credential cache", error_msg);
+            krb5_free_error_message(context, error_msg);
+	  }
+	  retval = krb5_unparse_name(context, old_princ, &princname);
+	  if (retval)  {
+            const char *msg;
+            msg = krb5_get_error_message(context, retval);
+            pam_syslog(pamh, LOG_ERR, "%s while creating principal string", msg);
+            krb5_free_error_message(context, msg);
+            //krb5_free_principal(context, princ);
+            //krb5_cc_close(context, cache);
+	  }
+	  pam_syslog(pamh, LOG_ERR, "Principalname = %s", princname);
+	  krb5_creds old_tgt;
+	  memset(&old_tgt, 0, sizeof(old_tgt)); /* https://web.mit.edu/kerberos/krb5-devel/doc/appdev/init_creds.html */
+	  if (get_ccache_tgt(context, old_cc, &old_tgt)) {
+
+	    /* NEW */
+	    krb5_ccache new_cc = NULL;
+	    char *new_ccache_name;
+	    if (asprintf(&new_ccache_name, "KCM:%d:%s", user_entry->pw_uid, globlist.gl_pathv[i]+12) < 7) {
+	      pam_syslog(pamh, LOG_ERR, "new ccache name alloc failed");
+	    }
+	    retval = krb5_cc_resolve(context, new_ccache_name, &new_cc);
+	    if (retval) {
+	      const char *error_msg = NULL;
+	      error_msg = krb5_get_error_message(context, retval);
+	      pam_syslog(pamh, LOG_ERR, "krb5_cc_resolve 2 on %s failed with %s", new_ccache_name, error_msg);
+	      krb5_free_error_message(context, error_msg);
+	    }
+	    retval = krb5_cc_initialize(context, new_cc, old_princ);
+	    if (retval) {
+	      const char *error_msg = NULL;
+	      error_msg = krb5_get_error_message(context, error);
+	      pam_syslog(pamh, LOG_ERR, "%s while initializing new credential cache with old_princ", error_msg);
+	      krb5_free_error_message(context, error_msg);
+	    }
+
+	    retval = krb5_cc_store_cred(context, new_cc, &old_tgt);
+	    //retval = krb5_cc_copy_creds(context, old_cc, new_cc);
+	    if (retval) {
+	      const char *error_msg = NULL;
+	      error_msg = krb5_get_error_message(context, retval);
+	      pam_syslog(pamh, LOG_ERR, "krb5_store_cred failed with %s", error_msg);
+	      krb5_free_error_message(context, error_msg);
+	    }
+	  } else {
+	    pam_syslog(pamh, LOG_ERR, "could not extract tgt");
+	  }
+	  i++;
+	}
+      }
+    }
+      
     /* ensure that the given credential cache exists at the end
        and whatever has been set up already is copied over  */
     int retval = prepare_ccache(pamh, context, target_cache, username, user_entry->pw_uid);
