@@ -558,6 +558,11 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
 	      error_msg = krb5_get_error_message(context, retval);
 	      pam_syslog(pamh, LOG_ERR, "krb5_store_cred failed with %s", error_msg);
 	      krb5_free_error_message(context, error_msg);
+	    } else {
+	      /* Here we should have copied over the ticket */
+	      pam_syslog(pamh, LOG_ERR, "TGT copy for %s from %s to %s", princname, old_ccache_name, new_ccache_name);
+	      krb5_cc_destroy(context, old_cc);
+	      unlink(globlist.gl_pathv[i]);
 	    }
 	  } else {
 	    pam_syslog(pamh, LOG_ERR, "could not extract tgt");
