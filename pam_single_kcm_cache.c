@@ -577,6 +577,12 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
         free(target_cache);
         krb5_free_context(context);
         return PAM_IGNORE;
+    } else {
+      /* We did copy from KCM:xxxx:xxxx_random1 to KCM:xxxx:random2 */
+      /* difficult to destroy all of them, so leave as TODO XXXXXX
+      if (random_in_use)
+	krb5_cc_destroy(context, new_cc);
+      */
     }
 
     if (retval != PAM_SUCCESS) {
