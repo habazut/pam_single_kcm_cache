@@ -305,7 +305,6 @@ prepare_ccache (pam_handle_t *pamh, krb5_context context, const char *cache_name
     krb5_ccache fixed_cache = NULL;
     krb5_principal test_princ = NULL;
     char *krb5ccname = getenv("KRB5CCNAME");
-    pam_syslog(pamh, LOG_ERR, "prepcache KRB5CCNAME=%s", krb5ccname);
     
     /* ensure that we are iterating all KCM */
     if (setenv("KRB5CCNAME", "KCM:", 1) != 0) {
@@ -482,7 +481,6 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
 	pam_syslog(pamh, LOG_ERR, "GLOBPATTERN alloc failed");
 	globpattern = "";
       }
-      pam_syslog(pamh, LOG_ERR, "GLOBPATTERN1: %s", globpattern);
       globresult = glob(globpattern, GLOB_ERR, NULL, &globlist);
       /*char *filematch = NULL;*/
       if (globresult == 0) {
@@ -491,8 +489,6 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
 	krb5_ccache source_cache = NULL;
 	krb5_creds source_tgt;
 	while (globlist.gl_pathv[i]) {
-	  pam_syslog(pamh, LOG_ERR, "GLOBFILE: %s", globlist.gl_pathv[i]);
-	  /*filematch = globlist.gl_pathv[i];*/
 	  char *old_ccache_name;
 	  if (asprintf(&old_ccache_name, "FILE:%s", globlist.gl_pathv[i]) < 7) {
 	    pam_syslog(pamh, LOG_ERR, "old ccache name alloc failed");
@@ -525,7 +521,6 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
             //krb5_free_principal(context, princ);
             //krb5_cc_close(context, cache);
 	  }
-	  pam_syslog(pamh, LOG_ERR, "Principalname = %s", princname);
 	  krb5_creds old_tgt;
 	  memset(&old_tgt, 0, sizeof(old_tgt)); /* https://web.mit.edu/kerberos/krb5-devel/doc/appdev/init_creds.html */
 	  if (get_ccache_tgt(context, old_cc, &old_tgt)) {
@@ -560,7 +555,7 @@ set_ideal_kerberos_cc_env (pam_handle_t *pamh, int argc, const char **argv)
 	      krb5_free_error_message(context, error_msg);
 	    } else {
 	      /* Here we should have copied over the ticket */
-	      pam_syslog(pamh, LOG_ERR, "TGT copy for %s from %s to %s", princname, old_ccache_name, new_ccache_name);
+	      pam_syslog(pamh, LOG_INFO, "TGT copy for %s from %s to %s", princname, old_ccache_name, new_ccache_name);
 	      krb5_cc_destroy(context, old_cc);
 	      unlink(globlist.gl_pathv[i]);
 	    }
